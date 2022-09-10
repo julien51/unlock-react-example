@@ -1,58 +1,5 @@
 import { useState, Context, createContext, useContext, useEffect } from "react"
-import { ethers } from 'ethers'
-// TODO: do we need _all_ of ethers just to check the signature and call 2 method on contracts?
-
-/**
- * A shortened ABI for the lock since we only care about a small number of functions
- */
-const abi = [{
-  "inputs": [
-    { "internalType": "address", "name": "_keyOwner", "type": "address" }
-  ],
-  "name": "totalKeys",
-  "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
-  "stateMutability": "view",
-  "type": "function"
-},
-{
-  "inputs": [
-    { "internalType": "address", "name": "_keyOwner", "type": "address" },
-    { "internalType": "uint256", "name": "_index", "type": "uint256" }
-  ],
-  "name": "tokenOfOwnerByIndex",
-  "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
-  "stateMutability": "view",
-  "type": "function"
-}, {
-  "inputs": [
-    { "internalType": "uint256", "name": "_tokenId", "type": "uint256" }
-  ],
-  "name": "keyExpirationTimestampFor",
-  "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
-  "stateMutability": "view",
-  "type": "function"
-}]
-
-/**
- * Returns a single membership
- * @param {*} network 
- * @param {*} lock 
- * @param {*} user 
- * @param {*} i 
- * @returns 
- */
-const getMembership = async (network, lock, user, i) => {
-  const provider = new ethers.providers.JsonRpcProvider(`https://rpc.unlock-protocol.com/${network}`)
-  const contract = new ethers.Contract(lock, abi, provider)
-  const tokenId = await contract.tokenOfOwnerByIndex(user, i)
-  const expiration = await contract.keyExpirationTimestampFor(tokenId);
-  return {
-    network,
-    lock,
-    tokenId,
-    expiration
-  }
-}
+import { authenticateFromCode, getMemberships } from './lib'
 
 /**
  * An internal context
@@ -106,24 +53,15 @@ export const useUnlock = (config) => {
    * When the user changes, check if user is authorized
    */
   useEffect(() => {
+    const loadMemberships = async () => {
+      setLoading(true)
+      const _memberships = await getMemberships(config, unlockContext.user)
+      setMemberships(_memberships)
+      setLoading(false)
+    }
+
     if (unlockContext.user && config.locks) {
-      const getAllMemberships = async () => {
-        setLoading(true)
-        const _memberships = []
-        await Promise.all(Object.keys(config.locks).map(async (lockAddress) => {
-          const network = config.locks[lockAddress].network || config.network
-          const provider = new ethers.providers.JsonRpcProvider(`https://rpc.unlock-protocol.com/${network}`)
-          const contract = new ethers.Contract(lockAddress, abi, provider)
-          const numberOfKeys = await contract.totalKeys(unlockContext.user)
-          return Promise.all(new Array(numberOfKeys.toNumber()).fill(0).map(async (_, i) => {
-            const membership = await getMembership(network, lockAddress, unlockContext.user, i)
-            return _memberships.push(membership)
-          }))
-        }))
-        setMemberships(_memberships)
-        setLoading(false)
-      }
-      getAllMemberships()
+      loadMemberships()
     } else if (memberships.length > 0) {
       setMemberships([])
     }
@@ -165,13 +103,7 @@ export const UnlockProvider = ({ children, path, push }) => {
     const urlSearchParams = new URLSearchParams(url.search);
     const params = Object.fromEntries(urlSearchParams.entries());
     if (params.code) {
-      const code = JSON.parse(atob(params.code))
-      urlSearchParams.delete('code')
-      urlSearchParams.delete('state')
-      url.search = urlSearchParams.toString();
-      const digest = code.d
-      const signature = code.s
-      const user = ethers.utils.verifyMessage(digest, signature)
+      const { user, signature, digest } = authenticateFromCode(params.code)
       setContext({
         deauthenticate: () => setContext({}),
         code: params.code,
@@ -180,6 +112,9 @@ export const UnlockProvider = ({ children, path, push }) => {
         signature
       })
       if (typeof push === 'function') {
+        urlSearchParams.delete('code')
+        urlSearchParams.delete('state')
+        url.search = urlSearchParams.toString();
         push(url.toString())
       }
     }
